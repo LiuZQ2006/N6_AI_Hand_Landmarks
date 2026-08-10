@@ -1,0 +1,16 @@
+# AI model generated output
+Model/st_ai_output/
+Model/st_ai_ws/
+Model/*.xSPI2.bin
+Model/*.hex
+Model/*.tflite
+
+# Build outputs
+Binary/
+
+# STM32CubeIDE auto-generated project files
+STM32CubeIDE/
+
+# IDE files
+.mxproject
+.claude/
