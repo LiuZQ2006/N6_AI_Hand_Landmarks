@@ -13,6 +13,8 @@
 #include "ll_aton_runtime.h"
 #include "IPL_resize.h"
 #include "gesture.h"
+#include "Trans.h"
+#include <stdio.h>
 
 typedef struct {
     float cx;
@@ -87,15 +89,17 @@ static app_display_t display;
 static uint8_t nn_input_buffers[2][NN_WIDTH * NN_HEIGHT * NN_BPP] __attribute__((aligned(32))) __attribute__((section(".EXTRAM")));
 static app_bqueue_t nn_input_queue;
 
+/* PIPE1 全分辨率捕获缓冲 (双缓冲, 供手部关键点模型使用) */
+static uint8_t hl_capture_buf[2][LCD_BG_WIDTH * LCD_BG_HEIGHT * 3] __attribute__((aligned(32))) __attribute__((section(".EXTRAM")));
+static volatile int hl_capture_fill_idx = 0;   /* PIPE1 正在填充的缓冲索引 */
+static volatile int hl_capture_ready_idx = -1; /* 最近完成捕获的缓冲索引 (-1=尚无) */
+
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(palm_detection);
 static app_roi_t app_pd_rois[PD_MAX_HAND_NB];
 
 LL_ATON_DECLARE_NAMED_NN_INSTANCE_AND_INTERFACE(hand_landmarks);
 
 static ld_point_t ld_landmarks[PD_MAX_HAND_NB][LD_LANDMARKS_NB];
-
-static uint32_t frame_event_nb;
-static volatile uint32_t frame_event_nb_for_resize;
 
 static app_cpuload_t cpuload;
 
@@ -125,6 +129,7 @@ static uint8_t app_hand_landmarks_run(uint8_t *buffer, app_hl_model_info_t *info
 void app_run(void)
 {
     app_lcd_init();
+    animation_init();
     app_bqueue_init(&nn_input_queue, 2, (uint8_t *[2]){nn_input_buffers[0], nn_input_buffers[1]});
     app_cpuload_init(&cpuload);
     app_camera_init(app_camera_display_pipe_vsync_cb, app_camera_display_pipe_frame_cb, NULL, app_camera_nn_pipe_frame_cb);
@@ -133,11 +138,13 @@ void app_run(void)
     tx_semaphore_create(&display.update, NULL, 0);
     tx_mutex_create(&display.lock, NULL, TX_INHERIT);
 
-    app_camera_display_pipe_start(app_lcd_get_bg_buffer(), CMW_MODE_CONTINUOUS);
+    /* PIPE1 全分辨率捕获 → hl_capture_buf (供手部关键点模型, 不干扰精灵 BG 层) */
+    app_camera_display_pipe_start(hl_capture_buf[0], CMW_MODE_CONTINUOUS);
 
     tx_thread_create(&nn_thread, "NN Thread", nn_thread_entry, 0, nn_thread_stack, sizeof(nn_thread_stack), TX_MAX_PRIORITIES - 3, TX_MAX_PRIORITIES - 3, 10, TX_AUTO_START);
     tx_thread_create(&dp_thread, "DP Thread", dp_thread_entry, 0, dp_thread_stack, sizeof(dp_thread_stack), TX_MAX_PRIORITIES - 2, TX_MAX_PRIORITIES - 2, 10, TX_AUTO_START);
     tx_thread_create(&isp_thread, "ISP Thread", isp_thread_entry, 0, isp_thread_stack, sizeof(isp_thread_stack), TX_MAX_PRIORITIES - 4, TX_MAX_PRIORITIES - 4, 10, TX_AUTO_START);
+    printf("T\r\n");
 }
 
 static void app_camera_display_pipe_vsync_cb(void)
@@ -147,21 +154,28 @@ static void app_camera_display_pipe_vsync_cb(void)
 
 static void app_camera_display_pipe_frame_cb(void)
 {
-    app_lcd_switch_bg_buffer();
-    app_camera_display_pipe_set_address(app_lcd_get_bg_buffer());
-    frame_event_nb++;
+    /* 若上一帧尚未被 nn_thread 消费 (ready_idx != -1), 丢弃当前帧,
+     * 让 PIPE1 继续写入 fill_idx (防止 DMA 覆盖正在被读取的缓冲) */
+    if (hl_capture_ready_idx >= 0) {
+        return;
+    }
+    hl_capture_ready_idx = hl_capture_fill_idx;          /* 标记为可读 */
+    hl_capture_fill_idx  = (hl_capture_fill_idx + 1) % 2; /* 切换到下一个缓冲 */
+    app_camera_display_pipe_set_address(hl_capture_buf[hl_capture_fill_idx]);
 }
 
 static void app_camera_nn_pipe_frame_cb(void)
 {
     uint8_t *buffer;
 
+    /* PIPE1 已停用, 由 PIPE2 帧回调触发 ISP */
+    tx_semaphore_put(&isp_semaphore);
+
     buffer = app_bqueue_get_free(&nn_input_queue, 0);
     if (buffer != NULL)
     {
         app_camera_nn_pipe_set_address(buffer);
         app_bqueue_put_ready(&nn_input_queue);
-        frame_event_nb_for_resize = frame_event_nb - 1;
     }
 }
 
@@ -176,7 +190,6 @@ static VOID nn_thread_entry(ULONG id)
     uint32_t nn_period_ms;
     float nn_period_filtered_ms = 0;
     uint8_t *capture_buffer;
-    uint32_t idx_for_resize;
     uint8_t is_tracking = 0;
     app_roi_t roi_next;
     uint32_t pd_ms;
@@ -203,7 +216,6 @@ static VOID nn_thread_entry(ULONG id)
         nn_period_filtered_ms = (15 * nn_period_filtered_ms + nn_period_ms) / 16;
 
         capture_buffer = app_bqueue_get_ready(&nn_input_queue);
-        idx_for_resize = frame_event_nb_for_resize % DISPLAY_BUFFER_NB;
 
         if (is_tracking == 0)
         {
@@ -222,16 +234,23 @@ static VOID nn_thread_entry(ULONG id)
         if (is_tracking != 0)
         {
             hl_ms = HAL_GetTick();
-            is_tracking = app_hand_landmarks_run(app_lcd_get_bg_buffer_by_index(idx_for_resize), &hl_info, &app_pd_rois[0], ld_landmarks[0]);
-            SCB_InvalidateDCache_by_Addr(app_lcd_get_bg_buffer_by_index(idx_for_resize), LCD_BG_WIDTH * LCD_BG_HEIGHT * 3);
+            /* 使用 PIPE1 专用捕获缓冲 (双缓冲, 立即消费防止 TOCTOU) */
+            if (hl_capture_ready_idx >= 0) {
+                int cap_idx = hl_capture_ready_idx;
+                SCB_InvalidateDCache_by_Addr(hl_capture_buf[cap_idx], sizeof(hl_capture_buf[cap_idx]));
+                is_tracking = app_hand_landmarks_run(hl_capture_buf[cap_idx], &hl_info, &app_pd_rois[0], ld_landmarks[0]);
+                hl_capture_ready_idx = -1;  /* 处理完毕后才释放缓冲 */
+	            } else {
+                is_tracking = 0;  /* 尚无 PIPE1 帧 */
+            }
             if (is_tracking != 0)
             {
             	uint8_t action = app_gesture_decode(ld_landmarks[0], app_pd_rois[0].cx, app_pd_rois[0].cy);
 
             	if (action != STOP)
             {
-            		Command_Transmit(action);
-            	 }
+                animation_trigger(action);
+            }
                 app_compute_next_roi(&app_pd_rois[0], ld_landmarks[0], &roi_next, &box_next);
             }
             else
@@ -270,6 +289,7 @@ static VOID dp_thread_entry(ULONG id)
     uint32_t disp_ms = 0;
     app_display_info_t info;
     uint32_t time_smap;
+    uint8_t *bg_buffer;
 
     while (1)
     {
@@ -281,7 +301,24 @@ static VOID dp_thread_entry(ULONG id)
         info.disp_ms = disp_ms;
 
         time_smap = HAL_GetTick();
+
+        /* 精灵渲染 → BG 层 */
+        bg_buffer = app_lcd_get_bg_buffer();
+        animation_tick();
+        printf("(\r\n");
+        sprite_draw_stage(bg_buffer);
+        printf(")\r\n");
+        {
+            const unsigned char *frame;
+            int sx, sy;
+            animation_get_render_state(&frame, &sx, &sy);
+            sprite_draw_image(bg_buffer, frame, sx, sy);
+        }
+
+        /* 调试信息 → FG 层 */
         app_display_network_output(&info);
+
+        app_lcd_switch_bg_buffer();
         disp_ms = HAL_GetTick() - time_smap;
     }
 }

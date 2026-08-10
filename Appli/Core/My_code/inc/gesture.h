@@ -3,9 +3,18 @@
 
 
 //include
-#include "Trans.h"
 #include "ld.h"
-#include <stdint.h>//宏
+#include <stdint.h>
+
+// ──────────────── 手势动作宏 ────────────────
+#define  STOP                 0x00
+#define  Move_Left            0x01
+#define  Move_Right           0x02
+#define  Jump_up              0x04
+#define  DOWN                 0x08
+#define  Fist_SKILL           0x10
+#define  Stick_Up             0x20
+#define  Change_Size          0x40
 
 //变量
 

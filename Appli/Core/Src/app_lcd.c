@@ -99,6 +99,11 @@ uint8_t *app_lcd_get_bg_buffer(void)
 
 void app_lcd_switch_bg_buffer(void)
 {
+    /* 将刚渲染完的 BG 缓冲从 DCache 刷到 HyperRAM, 否则 LTDC 读到旧数据 */
+    SCB_CleanDCache_by_Addr(
+        app_lcd_bg_buffer[app_lcd_bg_buffer_fill_idx],
+        sizeof(app_lcd_bg_buffer[app_lcd_bg_buffer_fill_idx]));
+
     app_lcd_bg_buffer_disp_idx = (app_lcd_bg_buffer_disp_idx + 1) % DISPLAY_BUFFER_NB;
     app_lcd_bg_buffer_fill_idx = (app_lcd_bg_buffer_fill_idx + 1) % DISPLAY_BUFFER_NB;
 

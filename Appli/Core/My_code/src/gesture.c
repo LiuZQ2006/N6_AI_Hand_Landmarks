@@ -44,6 +44,18 @@ static uint8_t check_is_Stick(ld_point_t lm[LD_LANDMARKS_NB])
     return 0;
 }
 
+/* 变身手势检测: 拇指+食指+小指 伸展, 中指+无名指 闭合 (🤟) */
+static uint8_t check_is_change(ld_point_t lm[LD_LANDMARKS_NB])
+{
+    if (get_distance(lm[4],  lm[0]) > get_distance(lm[2],  lm[0]) &&
+        get_distance(lm[8],  lm[0]) > get_distance(lm[5],  lm[0]) &&
+        get_distance(lm[12], lm[0]) < get_distance(lm[9],  lm[0]) &&
+        get_distance(lm[16], lm[0]) < get_distance(lm[13], lm[0]) &&
+        get_distance(lm[20], lm[0]) > get_distance(lm[17], lm[0]))
+        {return 1;}
+    return 0;
+}
+
 
 void app_gesture_init(void)
 {
@@ -65,6 +77,10 @@ uint8_t app_gesture_decode(ld_point_t landmarks[LD_LANDMARKS_NB], float hand_cx,
     else if (check_is_Stick(landmarks))
     {
         current_action = Stick_Up;
+    }
+    else if (check_is_change(landmarks))
+    {
+        current_action = Change_Size;
     }
     else
     {
