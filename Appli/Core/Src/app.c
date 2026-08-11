@@ -68,6 +68,7 @@ typedef struct {
 } app_hl_model_info_t;
 
 static TX_SEMAPHORE isp_semaphore;
+static TX_SEMAPHORE render_semaphore;
 
 static void app_camera_display_pipe_vsync_cb(void);
 static void app_camera_display_pipe_frame_cb(void);
@@ -135,6 +136,7 @@ void app_run(void)
     app_camera_init(app_camera_display_pipe_vsync_cb, app_camera_display_pipe_frame_cb, NULL, app_camera_nn_pipe_frame_cb);
 
     tx_semaphore_create(&isp_semaphore, NULL, 0);
+    tx_semaphore_create(&render_semaphore, NULL, 0);
     tx_semaphore_create(&display.update, NULL, 0);
     tx_mutex_create(&display.lock, NULL, TX_INHERIT);
 
@@ -149,6 +151,7 @@ void app_run(void)
 static void app_camera_display_pipe_vsync_cb(void)
 {
     tx_semaphore_put(&isp_semaphore);
+    tx_semaphore_ceiling_put(&render_semaphore, 1);
 }
 
 static void app_camera_display_pipe_frame_cb(void)
@@ -289,7 +292,7 @@ static VOID dp_thread_entry(ULONG id)
 
     while (1)
     {
-        tx_semaphore_get(&display.update, TX_WAIT_FOREVER);
+        tx_semaphore_get(&render_semaphore, TX_WAIT_FOREVER);
 
         tx_mutex_get(&display.lock, TX_WAIT_FOREVER);
         info = display.info;
