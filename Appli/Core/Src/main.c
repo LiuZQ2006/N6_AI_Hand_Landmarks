@@ -728,7 +728,6 @@ static VOID main_thread_entry(ULONG id)
 #endif
 
   uart_init(0);
-  printf("0\r\n");
   npu_config();
   iac_config();
   npu_cache_config();

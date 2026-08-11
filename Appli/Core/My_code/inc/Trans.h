@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 // ──────────────── 配置宏 ────────────────
-#define SPRITE_NORFLASH_BASE    0x70200400UL   /* NOR Flash 精灵数据起始 (与 SPRITEROM 一致) */
+#define SPRITE_NORFLASH_BASE    0x70800000UL   /* NOR Flash 精灵数据起始 (与 SPRITEROM 一致, AI模型后) */
 #define SPRITE_HYPERRAM_BASE    0x91612000UL   /* HyperRAM 可用起始 */
 #define SPRITE_TOTAL_SIZE       0x170000UL     /* 精灵数据实际大小 ~1.5MB (17个数组) */
 
@@ -64,7 +64,10 @@ extern const unsigned char gImage_change3[];
 /* 解析图片头, 填充 sprite_image_t 结构 */
 void sprite_parse_header(sprite_image_t *img, const unsigned char *data);
 
-/* 画完整戏台背景到 buffer (gImage_bg + 窗帘 + 木头舞台) */
+/* 启动时预渲染舞台背景到 HyperRAM (仅调用一次) */
+void stage_cache_init(void);
+
+/* 画完整戏台背景到 buffer (从缓存 memcpy, 极快) */
 void sprite_draw_stage(uint8_t *buffer);
 
 /* 画单个调色板精灵到 buffer, x/y 为左上角坐标, 透明色跳过 */

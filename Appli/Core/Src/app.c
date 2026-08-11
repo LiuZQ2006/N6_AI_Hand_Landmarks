@@ -144,7 +144,6 @@ void app_run(void)
     tx_thread_create(&nn_thread, "NN Thread", nn_thread_entry, 0, nn_thread_stack, sizeof(nn_thread_stack), TX_MAX_PRIORITIES - 3, TX_MAX_PRIORITIES - 3, 10, TX_AUTO_START);
     tx_thread_create(&dp_thread, "DP Thread", dp_thread_entry, 0, dp_thread_stack, sizeof(dp_thread_stack), TX_MAX_PRIORITIES - 2, TX_MAX_PRIORITIES - 2, 10, TX_AUTO_START);
     tx_thread_create(&isp_thread, "ISP Thread", isp_thread_entry, 0, isp_thread_stack, sizeof(isp_thread_stack), TX_MAX_PRIORITIES - 4, TX_MAX_PRIORITIES - 4, 10, TX_AUTO_START);
-    printf("T\r\n");
 }
 
 static void app_camera_display_pipe_vsync_cb(void)
@@ -168,7 +167,7 @@ static void app_camera_nn_pipe_frame_cb(void)
 {
     uint8_t *buffer;
 
-    /* PIPE1 已停用, 由 PIPE2 帧回调触发 ISP */
+    /* 与 VSYNC 回调共同触发 ISP, 保证 AE/AWB 及时更新 */
     tx_semaphore_put(&isp_semaphore);
 
     buffer = app_bqueue_get_free(&nn_input_queue, 0);
@@ -253,9 +252,6 @@ static VOID nn_thread_entry(ULONG id)
             }
                 app_compute_next_roi(&app_pd_rois[0], ld_landmarks[0], &roi_next, &box_next);
             }
-            else
-            {
-                }
             hl_ms = HAL_GetTick() - hl_ms;
         }
         else
@@ -305,9 +301,7 @@ static VOID dp_thread_entry(ULONG id)
         /* 精灵渲染 → BG 层 */
         bg_buffer = app_lcd_get_bg_buffer();
         animation_tick();
-        printf("(\r\n");
         sprite_draw_stage(bg_buffer);
-        printf(")\r\n");
         {
             const unsigned char *frame;
             int sx, sy;
