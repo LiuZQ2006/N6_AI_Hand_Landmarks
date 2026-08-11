@@ -149,7 +149,6 @@ void app_run(void)
 static void app_camera_display_pipe_vsync_cb(void)
 {
     tx_semaphore_put(&isp_semaphore);
-    tx_semaphore_ceiling_put(&render_semaphore, 1);
 }
 
 static void app_camera_display_pipe_frame_cb(void)
@@ -288,7 +287,7 @@ static VOID dp_thread_entry(ULONG id)
 
     while (1)
     {
-        tx_semaphore_get(&render_semaphore, TX_WAIT_FOREVER);
+        tx_thread_sleep(33);  /* 固定 ~30 FPS (1000Hz tick, 33ms) */
 
         tx_mutex_get(&display.lock, TX_WAIT_FOREVER);
         info = display.info;
