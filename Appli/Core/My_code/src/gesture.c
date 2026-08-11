@@ -9,9 +9,12 @@
 /* 屏幕中心与判定死区 (屏幕分辨率 800x480) */
 #define SCREEN_CENTER_X     400.0f
 #define SCREEN_CENTER_Y     240.0f
-/* 死区范围：手在屏幕正中央偏离不超过这个像素值，就认定为 STOP */
-#define DEADZONE_X          120.0f
-#define DEADZONE_Y          90.0f
+/* 死区范围：手在屏幕正中央偏离不超过这个像素值，就认定为 STOP
+ * 缩小死区提高灵敏度: X 120→80, Y 90→60 */
+#define DEADZONE_X          80.0f
+#define DEADZONE_Y          60.0f
+/* 方向偏置: |dx| > |dy| × BIAS 则判水平; BIAS<1.0 让水平方向更易触发 */
+#define DIR_BIAS_H          0.85f  /* |dx| > |dy|×0.85 → 水平, |dy| 需更小才判垂直 */
 
 static float get_distance(ld_point_t p1, ld_point_t p2)
 {
@@ -98,11 +101,11 @@ uint8_t app_gesture_decode(ld_point_t landmarks[LD_LANDMARKS_NB], float hand_cx,
 
         
         if (fabs(dx) > DEADZONE_X || fabs(dy) > DEADZONE_Y)
-        {   
-            if (fabs(dx) > fabs(dy)) {
+        {
+            if (fabs(dx) > fabs(dy) * DIR_BIAS_H) {
                 current_action = (dx > 0) ? Move_Right : Move_Left;
             } else {
-                
+
                 current_action = (dy > 0) ? DOWN : Jump_up;
             }
         }

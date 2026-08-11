@@ -104,6 +104,7 @@ static ld_point_t ld_landmarks[PD_MAX_HAND_NB][LD_LANDMARKS_NB];
 static app_cpuload_t cpuload;
 
 static uint8_t app_clamp_point_with_margin(int *x, int *y, int margin);
+static void app_draw_camera_preview(uint8_t *bg, app_display_info_t *info);
 static void app_display_hand(app_hand_info_t *hand);
 static void app_display_network_output(app_display_info_t *display_info);
 static void app_decode_ld_landmarks(app_roi_t *roi, ld_point_t *lm, ld_point_t *decoded);
@@ -313,6 +314,9 @@ static VOID dp_thread_entry(ULONG id)
             sprite_draw_image(bg_buffer, frame, sx, sy);
         }
 
+        /* 摄像头预览窗 (PiP) + 手部骨架 → BG 层左上角 */
+        app_draw_camera_preview(bg_buffer, &info);
+
         /* 调试信息 → FG 层 */
         app_display_network_output(&info);
 
@@ -433,6 +437,166 @@ static void app_display_network_output(app_display_info_t *display_info)
     }
 
     app_lcd_draw_area_commit();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 摄像头预览窗 (PiP) — BG 层左上角
+ *
+ * 线程安全: dp_thread (优先级 MAX-2) 不可被 nn_thread (MAX-3) 抢占,
+ * Camera ISR 在 hl_capture_ready_idx >= 0 时拒绝换缓冲 (DMA 不覆盖),
+ * 因此 dp_thread 读取 hl_capture_buf 期间物理缓冲不会被 DMA 改写.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+#define PREVIEW_X     2    /* 预览窗左上角 X (留一点边距) */
+#define PREVIEW_Y     2    /* 预览窗左上角 Y */
+#define PREVIEW_W     160  /* 预览窗宽度 */
+#define PREVIEW_H     120  /* 预览窗高度 */
+#define PREVIEW_BORDER 2   /* 白色边框宽度 */
+
+/* BG 层 RGB888 像素写入, 越界自动裁剪 */
+static inline void bg_set_pixel(uint8_t *buf, int x, int y,
+                                uint8_t r, uint8_t g, uint8_t b)
+{
+    if ((uint32_t)x >= LCD_BG_WIDTH || (uint32_t)y >= LCD_BG_HEIGHT) return;
+    uint8_t *p = &buf[((y * LCD_BG_WIDTH) + x) * 3];
+    p[0] = r; p[1] = g; p[2] = b;
+}
+
+/* Bresenham 直线 (BG buffer) */
+static void bg_draw_line(uint8_t *buf, int x0, int y0, int x1, int y1,
+                         uint8_t r, uint8_t g, uint8_t b)
+{
+    int dx  = (x1 > x0) ? (x1 - x0) : (x0 - x1);
+    int dy  = (y1 > y0) ? (y1 - y0) : (y0 - y1);
+    int sx  = (x0 < x1) ? 1 : -1;
+    int sy  = (y0 < y1) ? 1 : -1;
+    int err = dx - dy;
+    int e2;
+
+    for (;;) {
+        bg_set_pixel(buf, x0, y0, r, g, b);
+        if (x0 == x1 && y0 == y1) break;
+        e2 = err * 2;
+        if (e2 > -dy) { err -= dy; x0 += sx; }
+        if (e2 <  dx) { err += dx; y0 += sy; }
+    }
+}
+
+/* 实心圆 (BG buffer) */
+static void bg_fill_circle(uint8_t *buf, int cx, int cy, int radius,
+                           uint8_t r, uint8_t g, uint8_t b)
+{
+    int dx, dy;
+    for (dy = -radius; dy <= radius; dy++) {
+        for (dx = -radius; dx <= radius; dx++) {
+            if (dx * dx + dy * dy <= radius * radius) {
+                bg_set_pixel(buf, cx + dx, cy + dy, r, g, b);
+            }
+        }
+    }
+}
+
+/*
+ * app_draw_camera_preview
+ *   在 BG 缓冲左上角画摄像头预览窗 + 手部骨架关键点
+ *   由 dp_thread 每帧调用 (sprite 之后, switch 之前)
+ *
+ *   使用独立快照缓冲 (preview_snap): 只在摄像头帧就绪时刷新,
+ *   之后始终从快照绘制, 避免 ready_idx 在帧间变化导致预览窗时有时无.
+ */
+static void app_draw_camera_preview(uint8_t *bg, app_display_info_t *info)
+{
+    static uint8_t preview_snap[PREVIEW_W * PREVIEW_H * 3]
+        __attribute__((aligned(32)))
+        __attribute__((section(".EXTRAM")));
+    static int preview_snap_valid = 0;
+
+    int cap_idx;
+    int x, y;
+
+    if (!bg || !info) return;
+
+    /* ── 1. 有新帧时刷新快照 (从 hl_capture_buf 下采样) ── */
+    cap_idx = hl_capture_ready_idx;
+    if (cap_idx >= 0) {
+        SCB_InvalidateDCache_by_Addr(hl_capture_buf[cap_idx],
+                                     sizeof(hl_capture_buf[cap_idx]));
+        for (y = 0; y < PREVIEW_H; y++) {
+            uint8_t *src_row = &hl_capture_buf[cap_idx][(y * 4) * LCD_BG_WIDTH * 3];
+            uint8_t *dst_row = &preview_snap[(y * PREVIEW_W) * 3];
+            uint8_t *src = src_row;
+            uint8_t *dst = dst_row;
+            for (x = 0; x < PREVIEW_W; x++) {
+                dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2];
+                src += 15;  /* 5 源像素 × 3 B */
+                dst += 3;
+            }
+        }
+        preview_snap_valid = 1;
+    }
+
+    /* ── 2. 从快照画预览窗到 BG (始终执行, 不依赖 ready_idx) ── */
+    if (preview_snap_valid) {
+        for (y = 0; y < PREVIEW_H; y++) {
+            uint8_t *src_row = &preview_snap[(y * PREVIEW_W) * 3];
+            uint8_t *dst_row = &bg[((PREVIEW_Y + y) * LCD_BG_WIDTH + PREVIEW_X) * 3];
+            uint8_t *src = src_row;
+            uint8_t *dst = dst_row;
+            for (x = 0; x < PREVIEW_W; x++) {
+                dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2];
+                src += 3;
+                dst += 3;
+            }
+        }
+    }
+
+    /* ── 3. 白色边框 (2px) ── */
+    for (y = PREVIEW_Y - PREVIEW_BORDER; y < PREVIEW_Y; y++)
+        for (x = PREVIEW_X - PREVIEW_BORDER; x < PREVIEW_X + PREVIEW_W + PREVIEW_BORDER; x++)
+            bg_set_pixel(bg, x, y, 255, 255, 255);
+    for (y = PREVIEW_Y + PREVIEW_H; y < PREVIEW_Y + PREVIEW_H + PREVIEW_BORDER; y++)
+        for (x = PREVIEW_X - PREVIEW_BORDER; x < PREVIEW_X + PREVIEW_W + PREVIEW_BORDER; x++)
+            bg_set_pixel(bg, x, y, 255, 255, 255);
+    for (y = PREVIEW_Y; y < PREVIEW_Y + PREVIEW_H; y++)
+        for (x = PREVIEW_X - PREVIEW_BORDER; x < PREVIEW_X; x++)
+            bg_set_pixel(bg, x, y, 255, 255, 255);
+    for (y = PREVIEW_Y; y < PREVIEW_Y + PREVIEW_H; y++)
+        for (x = PREVIEW_X + PREVIEW_W; x < PREVIEW_X + PREVIEW_W + PREVIEW_BORDER; x++)
+            bg_set_pixel(bg, x, y, 255, 255, 255);
+
+    /* ── 4. 手部关键点骨架 (缩放坐标 → 预览窗, 带裁剪) ── */
+    if (info->pd_hand_nb > 0 && info->hands[0].is_valid) {
+        app_hand_info_t *hand = &info->hands[0];
+        ld_point_t decoded;
+        int lx[LD_LANDMARKS_NB], ly[LD_LANDMARKS_NB];
+        uint8_t i;
+        int px, py;
+
+        for (i = 0; i < LD_LANDMARKS_NB; i++) {
+            app_decode_ld_landmarks(&hand->roi, &hand->ld_landmarks[i], &decoded);
+            px = PREVIEW_X + (int)(decoded.x * PREVIEW_W / LCD_BG_WIDTH);
+            py = PREVIEW_Y + (int)(decoded.y * PREVIEW_H / LCD_BG_HEIGHT);
+            /* 裁剪到预览窗内 (防止 Bresenham 线陷入超长迭代) */
+            if (px < PREVIEW_X) px = PREVIEW_X;
+            if (px >= PREVIEW_X + PREVIEW_W) px = PREVIEW_X + PREVIEW_W - 1;
+            if (py < PREVIEW_Y) py = PREVIEW_Y;
+            if (py >= PREVIEW_Y + PREVIEW_H) py = PREVIEW_Y + PREVIEW_H - 1;
+            lx[i] = px;
+            ly[i] = py;
+        }
+
+        /* 骨架连线 (青色) */
+        for (i = 0; i < LD_BINDING_NB; i++) {
+            int a = ld_bindings_idx[i][0];
+            int b = ld_bindings_idx[i][1];
+            bg_draw_line(bg, lx[a], ly[a], lx[b], ly[b], 0, 255, 255);
+        }
+
+        /* 关键点圆点 (绿色, r=2) */
+        for (i = 0; i < LD_LANDMARKS_NB; i++) {
+            bg_fill_circle(bg, lx[i], ly[i], 2, 0, 255, 0);
+        }
+    }
 }
 
 static void app_decode_ld_landmarks(app_roi_t *roi, ld_point_t *lm, ld_point_t *decoded)
