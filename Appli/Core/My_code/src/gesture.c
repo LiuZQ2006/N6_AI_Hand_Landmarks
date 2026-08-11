@@ -57,9 +57,11 @@ static uint8_t check_is_change(ld_point_t lm[LD_LANDMARKS_NB])
 }
 
 
+static uint8_t gesture_need_reset = 0;
+
 void app_gesture_init(void)
 {
-
+    gesture_need_reset = 1;
 }
 
 //解码
@@ -68,6 +70,12 @@ uint8_t app_gesture_decode(ld_point_t landmarks[LD_LANDMARKS_NB], float hand_cx,
     static uint8_t last_action = STOP;
     static uint8_t action_count = 0;
     uint8_t current_action = STOP;
+
+    if (gesture_need_reset) {
+        last_action = STOP;
+        action_count = 0;
+        gesture_need_reset = 0;
+    }
 
     
     if (check_is_fist(landmarks))
@@ -109,7 +117,7 @@ uint8_t app_gesture_decode(ld_point_t landmarks[LD_LANDMARKS_NB], float hand_cx,
         if (current_action == last_action) {
             action_count++;
             if (action_count >= FILTER_FRAME_COUNT) {
-                action_count = 0;
+                action_count = FILTER_FRAME_COUNT - 1;  /* 保持确认态, 避免50%占空比抖动 */
                 return current_action;
             }
         } else {

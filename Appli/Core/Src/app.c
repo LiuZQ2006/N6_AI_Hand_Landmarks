@@ -190,6 +190,7 @@ static VOID nn_thread_entry(ULONG id)
     float nn_period_filtered_ms = 0;
     uint8_t *capture_buffer;
     uint8_t is_tracking = 0;
+    uint8_t was_stopped  = 0;   /* 避免重复 animation_trigger(STOP) */
     app_roi_t roi_next;
     uint32_t pd_ms;
     uint32_t hl_ms;
@@ -244,6 +245,7 @@ static VOID nn_thread_entry(ULONG id)
             }
             if (is_tracking != 0)
             {
+                was_stopped = 0;  /* 恢复跟踪, 允许下次丢失时重新发 STOP */
             	uint8_t action = app_gesture_decode(ld_landmarks[0], app_pd_rois[0].cx, app_pd_rois[0].cy);
 
             	if (action != STOP)
@@ -258,7 +260,10 @@ static VOID nn_thread_entry(ULONG id)
         {
             hl_ms = 0;
             app_gesture_init();
-            animation_trigger(STOP);  /* 手丢失时立即停止动画 */
+            if (!was_stopped) {
+                animation_trigger(STOP);  /* 手丢失时立即停止动画, 仅发一次 */
+                was_stopped = 1;
+            }
         }
         ld_filtered_ms = (7 * ld_filtered_ms + hl_ms) / 8;
     
