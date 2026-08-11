@@ -43,7 +43,6 @@ typedef struct {
 } app_display_info_t;
 
 typedef struct {
-    TX_SEMAPHORE update;
     TX_MUTEX lock;
     app_display_info_t info;
 } app_display_t;
@@ -137,7 +136,6 @@ void app_run(void)
 
     tx_semaphore_create(&isp_semaphore, NULL, 0);
     tx_semaphore_create(&render_semaphore, NULL, 0);
-    tx_semaphore_create(&display.update, NULL, 0);
     tx_mutex_create(&display.lock, NULL, TX_INHERIT);
 
     /* PIPE1 全分辨率捕获 → hl_capture_buf (供手部关键点模型, 不干扰精灵 BG 层) */
@@ -278,8 +276,6 @@ static VOID nn_thread_entry(ULONG id)
             display.info.hands[0].ld_landmarks[j] = ld_landmarks[0][j];
         }
         tx_mutex_put(&display.lock);
-    
-        tx_semaphore_ceiling_put(&display.update, 1);
     }
 }
 
