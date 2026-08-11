@@ -258,6 +258,7 @@ static VOID nn_thread_entry(ULONG id)
         {
             hl_ms = 0;
             app_gesture_init();
+            animation_trigger(STOP);  /* 手丢失时立即停止动画 */
         }
         ld_filtered_ms = (7 * ld_filtered_ms + hl_ms) / 8;
     

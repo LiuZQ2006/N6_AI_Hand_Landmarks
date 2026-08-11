@@ -14,8 +14,8 @@
 #define LCD_WIDTH               800
 #define LCD_HEIGHT              480
 
-#define ANIM_FRAME_INTERVAL     3              /* 帧间隔(dp_thread tick数, ~100ms@30fps) */
-#define ANIM_WALK_SPEED         2              /* 走路像素偏移 (20Hz动画帧率, ~40px/s) */
+#define ANIM_FRAME_INTERVAL     2              /* 帧间隔(dp_thread tick数, ~66ms@30fps → 15FPS动画) */
+#define ANIM_WALK_SPEED         5              /* 走路像素偏移 (15FPS × 5px = 75px/s) */
 #define CHANGE_PAUSE_TICKS      25             /* 变身第3帧停顿 tick 数 (~2.5s) */
 
 // ──────────────── 图片格式类型 ────────────────
