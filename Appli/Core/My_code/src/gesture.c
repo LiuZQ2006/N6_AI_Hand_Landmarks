@@ -2,7 +2,7 @@
 #include <math.h>
 
 /* 动作防抖参数定义 */
-#define FILTER_FRAME_COUNT  5
+#define FILTER_FRAME_COUNT  2   /* 本地推理无丢包, 2帧防偶发抖动即可 (~200ms) */
 #define MOVE_THRESHOLD_RATIO 0.3f
 
 

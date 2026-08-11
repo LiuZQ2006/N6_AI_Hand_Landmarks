@@ -67,6 +67,9 @@ void sprite_parse_header(sprite_image_t *img, const unsigned char *data);
 /* 启动时预渲染舞台背景到 HyperRAM (仅调用一次) */
 void stage_cache_init(void);
 
+/* 启动时预展开全部角色精灵到 HyperRAM RGB888 缓存 (仅调用一次) */
+void sprite_cache_init_all(void);
+
 /* 画完整戏台背景到 buffer (从缓存 memcpy, 极快) */
 void sprite_draw_stage(uint8_t *buffer);
 
